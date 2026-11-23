@@ -976,28 +976,46 @@ window.MASTER={updateCity,updateKec,updateRegional,updateGA,targetSet};
 const FB=window.FB; const WEEKS={}; let EMB=0;
 try{ const el=document.getElementById('saved-weeks'); const j=el?JSON.parse(el.textContent||'{}'):{}; for(const [d,p] of Object.entries(j)){ try{ FB.mergeWeek(+d,JSON.parse(p)); WEEKS[d]=p; EMB++; }catch(e){} } }catch(e){}
 const $=s=>document.querySelector(s);
-let C=null, db=null, downloads=null, dirtyMeta=false, OWNER=false;
+let C=null, downloads=null, dirtyMeta=false, OWNER=false;
 function applyRole(){ document.body.classList.toggle('is-owner',OWNER); }
 const el=(t,a={},...kids)=>{const e=document.createElement(t);for(const[k,v]of Object.entries(a)){if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else e.setAttribute(k,v);}kids.flat().forEach(k=>e.append(k instanceof Node?k:document.createTextNode(String(k))));return e;};
 const OPS7=[['tsel','Telkomsel'],['xl','XLSmart'],['isat','Indosat IM3'],['three','Tri'],['sf','Smartfren'],['xlplus','XL+'],['ioh','IOH']];
 
-/* ---------- capabilities ---------- */
-(async()=>{ if(!window.claude||!window.claude.use) return;
-  try{ const usr=await window.claude.use('user'); OWNER=usr?!!(await usr.isOwner()):false; }catch(e){ OWNER=false; }
-  applyRole(); renderStatus(); show();
-  try{ downloads=await window.claude.use('downloads'); }catch(e){}
-  try{ db=await window.claude.use('db'); }catch(e){}
-  if(db) loadHistory();
-  renderStatus();
-})();
+/* ---------- GitHub Pages mode: owner sign-in, history, publish ---------- */
+const GH={repo:'bgaregion04/BGA_Region_Jabar',branch:'main',file:'weeks.json'};
+const TOK_KEY='bga_gh_token';
+function getTok(){ try{ return localStorage.getItem(TOK_KEY)||''; }catch(e){ return window.__tok||''; } }
+function setTok(v){ try{ if(v) localStorage.setItem(TOK_KEY,v); else localStorage.removeItem(TOK_KEY); }catch(e){ window.__tok=v; } }
+downloads={ save:async({filename,data})=>{ const blob=data instanceof Blob?data:new Blob([data],{type:'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=filename; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),60000); } };
+async function ghCheck(tok){ const r=await fetch('https://api.github.com/repos/'+GH.repo,{headers:{Authorization:'Bearer '+tok,Accept:'application/vnd.github+json'},cache:'no-store'});
+  if(r.status===401) throw new Error('Token was rejected by GitHub.'); if(r.status===404) throw new Error('This token cannot see the repository '+GH.repo+'.'); if(!r.ok) throw new Error('GitHub answered '+r.status+'.');
+  const j=await r.json(); if(!(j.permissions&&j.permissions.push)) throw new Error('This token has no write access to '+GH.repo+'.'); return true; }
+function ownerUI(){ const host=document.querySelector('header.top'); if(!host||document.getElementById('own-box')) return;
+  const box=el('div',{id:'own-box',style:'display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px'});
+  const inp=el('input',{type:'password',id:'own-tok',placeholder:'GitHub token (owner)',autocomplete:'off',style:'font:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);width:170px'});
+  const btn=el('button',{type:'button',id:'own-btn',class:'sec',style:'padding:4px 10px;font-size:12px'},'Owner sign-in');
+  const st=el('span',{id:'own-st',class:'muted'});
+  btn.addEventListener('click',async()=>{ if(OWNER){ setTok(''); OWNER=false; applyRole(); ownerUI.refresh(); show(); return; }
+    const t=inp.value.trim()||getTok(); if(!t){ st.textContent='Paste the token first.'; return; } st.textContent='Checking…';
+    try{ await ghCheck(t); setTok(t); OWNER=true; inp.value=''; applyRole(); ownerUI.refresh(); renderStatus(); show(); }catch(e){ st.textContent=e.message; st.className='alert'; } });
+  box.append(inp,btn,st); host.append(box);
+  ownerUI.refresh=()=>{ inp.hidden=OWNER; btn.textContent=OWNER?'Sign out':'Owner sign-in'; st.className='muted'; st.textContent=OWNER?'Signed in as owner':''; };
+  ownerUI.refresh(); }
+(async()=>{ await Promise.resolve(); ownerUI(); const t=getTok(); if(t){ try{ await ghCheck(t); OWNER=true; }catch(e){ OWNER=false; if(/rejected|no write|cannot see/.test(e.message)) setTok(''); } }
+  applyRole(); ownerUI.refresh(); renderStatus(); show(); loadHistory(); })();
+async function fetchRemoteWeeks(){
+  const hdr={Accept:'application/vnd.github.raw+json'}; const tk=getTok(); if(tk) hdr.Authorization='Bearer '+tk;
+  try{ const r=await fetch(`https://api.github.com/repos/${GH.repo}/contents/${GH.file}?ref=${GH.branch}`,{headers:hdr,cache:'no-store'}); if(r.ok) return await r.json(); }catch(e){}
+  const r2=await fetch(GH.file+'?t='+Date.now(),{cache:'no-store'}); if(!r2.ok) throw new Error('weeks.json '+r2.status); return await r2.json(); }
 async function loadHistory(){
-  const t=setTimeout(()=>{setHist('History: seed only (saved weeks did not load in time).');},10000);
-  try{ const snap=await db.collection('weeks').get(); clearTimeout(t); let n=0;
-    snap.docs.forEach(d=>{const v=d.data(); if(!v||!v.payload) return; try{FB.mergeWeek(+d.id,JSON.parse(v.payload)); WEEKS[d.id]=v.payload; n++;}catch(e){}});
+  const t=setTimeout(()=>{setHist('History: built-in weeks only (saved weeks did not load in time).');},10000);
+  try{ const j=await fetchRemoteWeeks(); clearTimeout(t); let n=0;
+    for(const [d,p] of Object.entries(j||{})){ try{ FB.mergeWeek(+d,JSON.parse(p)); WEEKS[d]=p; n++; }catch(e){} }
     const sd=(()=>{const t=FB.fromSerial(Math.max(...Object.keys(window.__SEED__.ms).map(Number)));return `${t.d} ${FB.MON[t.m-1]} ${t.y}`;})(); const lastW=(()=>{const t=FB.fromSerial(Math.max(...Object.keys(FB.H.ms).map(Number)));return `${t.d} ${FB.MON[t.m-1]} ${t.y}`;})();
     const k=Object.keys(WEEKS).length; setHist(k?`History: built-in to ${sd}, plus ${k} saved week${k>1?'s':''} (latest ${lastW}).`:`History: built-in to ${sd}. No saved weeks yet.`);
     if(!FB.S.city&&!FB.S.uploadF) FB.S.F=null; run();
-  }catch(e){clearTimeout(t); setHist('History: seed only. Saved weeks could not be read ('+(e.code||'error')+').');}
+  }catch(e){clearTimeout(t); setHist('History: built-in weeks only. Saved weeks could not be read ('+(e.message||'error')+').');}
 }
 function setHist(t){$('#hist').textContent=t;}
 
@@ -1010,7 +1028,7 @@ function renderStatus(){
     const saved=!have&&C&&((k==='city'&&C.fromHistory)||(C.pathSrc&&C.pathSrc[k]==='saved'));
     const st=dup.has(k)?'dup':(have||saved?'ok':'miss');
     box.append(el('li',{class:'chip '+st},el('span',{class:'dot','aria-hidden':'true'}),l+(st==='dup'?' · duplicate':(saved?' · saved week':''))));}
-  $('#btn-save').disabled=!(C&&OWNER); $('#dl-note').hidden=!!downloads||!window.claude;
+  $('#btn-save').disabled=!(C&&OWNER); $('#dl-note').hidden=true;
 }
 async function handleFiles(list){
   const log=[];
@@ -1170,7 +1188,7 @@ window.addEventListener('hashchange',show);
 /* ---------- exports ---------- */
 function msg(t,bad){const m=$('#ex-msg'); m.textContent=t; m.className=bad?'alert':'ok';}
 async function save(filename,data){
-  if(!downloads){msg('Downloads are not available in this view. Open the page in claude.ai to save files.',true);return;}
+  if(!downloads){msg('Downloads are not available in this browser.',true);return;}
   try{await downloads.save({filename,data}); msg(`Saved ${filename}.`);}catch(e){ msg(e.code==='declined'?`${filename} was not saved.`:`Could not save ${filename} (${e.code||'error'}).`, e.code!=='declined');}
 }
 $('#ex-ppt').addEventListener('click',async()=>{ if(!C)return; if(typeof PptxGenJS==='undefined'){msg('The PowerPoint library did not load. Reload the page and try again.',true);return;}
@@ -1189,13 +1207,24 @@ $('#btn-save').addEventListener('click',async()=>{ if(!C||!OWNER)return;
   if(C.gaJ) p.jga={tsel:C.gaJ.cur[0],ioh:C.gaJ.cur[1],xlplus:C.gaJ.cur[2]};
   if(p.ms.some(v=>!v)){msg('Some Jabar cities are missing from the City CSV, so this week was not saved.',true);return;}
   const btn=$('#btn-save'); btn.disabled=true; const pay=JSON.stringify(p); const note=C.jFromMeta?'':' Jabar share is still derived from city data.';
-  if(db){ try{ await db.doc('weeks/'+C.F).set({payload:pay,savedAt:new Date().toISOString()}); }catch(e){ /* the page republish below is what public viewers see */ } }
-  FB.mergeWeek(C.F,p); WEEKS[String(C.F)]=pay;
-  let art=null; try{ art=await window.claude.use('artifact'); }catch(e){}
-  if(!art){ msg(`Week ${C.L.wk} saved for signed-in viewers only: this view cannot update the public page.`+note,true); btn.disabled=false; return; }
-  msg(`Publishing week ${C.L.wk} for everyone… the page reloads when done.`);
-  const html=window.__INDEX_PRE+'<script id="saved-weeks" type="application/json">'+JSON.stringify(WEEKS).replace(/</g,'\\u003c')+'</'+'script>'+window.__INDEX_POST;
-  try{ await art.publish(html); }catch(e){ const c=e&&e.code||'error'; msg(c==='conflict'?'Someone published a newer version first; the page is reloading. Save again after it loads.':`Week ${C.L.wk} saved for signed-in viewers, but the public page was not updated (${c}).`+note,true); btn.disabled=false; } });
+  const tok=getTok(); if(!tok){ msg('Sign in as owner first.',true); btn.disabled=false; return; }
+  msg(`Publishing week ${C.L.wk} to GitHub…`);
+  try{
+    const api=`https://api.github.com/repos/${GH.repo}/contents/${GH.file}`; const H={Authorization:'Bearer '+tok,Accept:'application/vnd.github+json'};
+    for(let attempt=0;attempt<3;attempt++){
+      let sha=null, remote={}; const g=await fetch(api+'?ref='+GH.branch+'&t='+Date.now(),{headers:H,cache:'no-store'});
+      if(g.ok){ const gj=await g.json(); sha=gj.sha; try{ remote=JSON.parse(decodeURIComponent(escape(atob(gj.content.replace(/\n/g,'')))))||{}; }catch(e){ remote={}; } }
+      else if(g.status!==404) throw new Error('GitHub answered '+g.status+' while reading weeks.json.');
+      remote[String(C.F)]=pay;
+      const body=JSON.stringify(remote); const b64=btoa(unescape(encodeURIComponent(body)));
+      const put=await fetch(api,{method:'PUT',headers:Object.assign({'Content-Type':'application/json'},H),body:JSON.stringify({message:`Week ${C.L.wk} ${C.L.y} (${C.L.ymd})`,content:b64,branch:GH.branch,sha:sha||undefined})});
+      if(put.ok){ FB.mergeWeek(C.F,p); for(const [d,v] of Object.entries(remote)) WEEKS[d]=v; msg(`Week ${C.L.wk} is published. Everyone sees it on this link within seconds.`+note); btn.disabled=false; return; }
+      if(put.status===409||put.status===422){ continue; }
+      if(put.status===401||put.status===403) throw new Error('GitHub refused the write (token expired or has no Contents: write permission).');
+      throw new Error('GitHub answered '+put.status+'.');
+    }
+    throw new Error('weeks.json kept changing; try Save again.');
+  }catch(e){ msg(`Week ${C.L.wk} was not published: ${e.message}`+note,true); btn.disabled=false; } });
 
 /* ---------- master workbooks ---------- */
 const MW={city:null,kec:null,reg:null,ga:null,png:null};
@@ -1217,10 +1246,8 @@ $('#mw-file').addEventListener('change',async e=>{ const notes=[]; const files=[
     if(mwKind(f0.name)==='zip'){ try{ $('#mw-prog').textContent='Opening '+f0.name+'…'; list=await mwUnzip(f0); if(!list.length) notes.push(`${f0.name}: no workbook inside.`); else notes.push(`${f0.name}: opened, using ${list.map(x=>x.name).join(', ')}.`);}catch(err){ notes.push(`${f0.name}: could not open this zip (${err.message}).`); continue; } }
     for(const f of list){ const k=mwKind(f.name); if(k&&k!=='zip') MW[k]=f; else notes.push(`${f.name}: not recognised. Expected fb_city….xlsb, fb_kec….xlsb, Fb_share_regional….xlsx, fb_gross_add….xlsx or a .png.`); } }
   e.target.value=''; mwRender(); const lg=$('#mw-log'); lg.textContent=''; notes.forEach(t=>lg.append(el('li',{class:/not recognised|could not|no workbook/.test(t)?'alert':''},t))); });
-async function saveBlob(name,blob){ (window.__saved=window.__saved||{})[name]=blob; if(!downloads) return 'nodl';
-  let fname=name, data=blob;
-  if(/\.xlsb$/i.test(name)){ /* claude.ai does not allow .xlsb downloads: deliver the workbook inside a .zip */ const z=new JSZip(); z.file(name,blob,{binary:true,createFolders:false}); data=await z.generateAsync({type:'blob',compression:'STORE'}); fname=name.replace(/\.xlsb$/i,'.zip'); }
-  try{ await downloads.save({filename:fname,data}); return fname===name?'saved':'savedzip'; }catch(e){ return e.code||'error'; } }
+async function saveBlob(name,blob){ (window.__saved=window.__saved||{})[name]=blob;
+  try{ await downloads.save({filename:name,data:blob}); return 'saved'; }catch(e){ return e.code||'error'; } }
 function dlButton(name){ return el('button',{class:'sec',type:'button','data-f':name},'Download '+name); }
 document.addEventListener('click',async e=>{const b=e.target.closest&&e.target.closest('button[data-f]'); if(!b) return; const n=b.dataset.f; const st=await saveBlob(n,window.__saved[n]); b.textContent=st==='saved'?'Saved '+n:st==='savedzip'?'Saved '+n.replace(/\.xlsb$/i,'.zip'):(st==='declined'?'Download '+n:`Could not save (${st})`);});
 $('#mw-run').addEventListener('click',async()=>{ if(!C) return; const btn=$('#mw-run'); btn.disabled=true; const logUl=$('#mw-log'); logUl.textContent='';
@@ -1231,7 +1258,7 @@ $('#mw-run').addEventListener('click',async()=>{ if(!C) return; const btn=$('#mw
     try{
       const blob=await fn(MW[k],log); prog(`saving ${name}`); const st=await saveBlob(name,blob);
       log.forEach(t=>logUl.append(el('li',{},t)));
-      const li=el('li',{class:st==='saved'||st==='savedzip'?'ok':'alert'},`${name}: ${st==='saved'?'saved':st==='savedzip'?'saved as '+name.replace(/\.xlsb$/i,'.zip')+' (extract it to get the .xlsb)':st==='nodl'?'ready, but downloads are not available in this view (open the page in claude.ai)':st==='declined'?'download was declined':'not saved ('+st+')'} · ${((performance.now()-t0)/1000).toFixed(0)} s · ${(blob.size/1e6).toFixed(1)} MB `);
+      const li=el('li',{class:st==='saved'||st==='savedzip'?'ok':'alert'},`${name}: ${st==='saved'?'saved':st==='savedzip'?'saved as '+name.replace(/\.xlsb$/i,'.zip')+' (extract it to get the .xlsb)':st==='nodl'?'ready, but this browser blocked the download; use the button':st==='declined'?'download was declined':'not saved ('+st+')'} · ${((performance.now()-t0)/1000).toFixed(0)} s · ${(blob.size/1e6).toFixed(1)} MB `);
       if(st!=='saved'&&st!=='savedzip') li.append(dlButton(name)); logUl.append(li);
     }catch(e){ log.forEach(t=>logUl.append(el('li',{},t))); logUl.append(el('li',{class:'alert'},`${name}: ${e.message}`)); } }
   $('#mw-prog').textContent='Done. Each file was offered for download; if a prompt was missed, use its Download button below. Open each file in Excel once so the pivots refresh, then save it for next week.'; btn.disabled=false; });
